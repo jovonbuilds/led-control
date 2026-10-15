@@ -59,6 +59,38 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(PixelFrame(pngData: data, height: 16), f)
     }
 
+    func testAnimationMatchesPython() throws {
+        let frames = (0..<3).map { k -> PixelFrame in
+            var f = PixelFrame(width: 96, height: 16)
+            for x in 0..<96 { for y in 0..<16 { f[x, y] = SignColor(rawValue: UInt8((x * 3 + y + k) % 8))! } }
+            return f
+        }
+        XCTAssertEqual(CoolLEDProtocol.animation(frames, delay: 150), try golden()["anim3"])
+    }
+
+    func testScrollLoopWrapsSeamlessly() {
+        var d = PixelFrame(width: 96, height: 16, fill: .blue)
+        d[0, 0] = .white
+        let frames = ScrollLoop.frames(of: d, signWidth: 96, step: 2)
+        XCTAssertEqual(frames.count, 48)
+        XCTAssertEqual(frames[0], d)
+        XCTAssertEqual(frames[1][94, 0], .white)   // moved 2 px left, wrapped to the right edge
+        XCTAssertTrue(frames.allSatisfy { $0.width == 96 && $0.backgroundColor == .blue })
+        XCTAssertTrue(ScrollLoop.needsLoop(d))
+        XCTAssertFalse(ScrollLoop.needsLoop(PixelFrame(width: 96, height: 16)))
+    }
+
+    func testDocumentRoundTrip() throws {
+        let doc = LEDSignDocument(frame: pattern(width: 96),
+                                  settings: .init(brightness: 180, speed: 40, mode: .scrollLeft, loopDelay: 150))
+        let back = try LEDSignDocument.decode(doc.encoded())
+        XCTAssertEqual(back, doc)
+        XCTAssertEqual(try back.frame(), pattern(width: 96))
+        XCTAssertEqual(back.settings.signMode, .scrollLeft)
+        XCTAssertEqual(back.rows.count, 16)
+        XCTAssertEqual(back.rows[0].count, 96)
+    }
+
     func testTextRendersInk() {
         let f = TextRenderer.render("HI", fontName: "Helvetica", fontSize: 14, color: .red, bold: true)
         XCTAssertEqual(f.height, 16)

@@ -26,9 +26,26 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>LED Sign uses Bluetooth to send text and drawings to your CoolLED sign.</string>
+    <key>UTExportedTypeDeclarations</key>
+    <array><dict>
+        <key>UTTypeIdentifier</key><string>io.jovon.ledsign.design</string>
+        <key>UTTypeDescription</key><string>LED Sign Design</string>
+        <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+        <key>UTTypeTagSpecification</key>
+        <dict><key>public.filename-extension</key><array><string>ledsign</string></array></dict>
+    </dict></array>
+    <key>CFBundleDocumentTypes</key>
+    <array><dict>
+        <key>CFBundleTypeName</key><string>LED Sign Design</string>
+        <key>CFBundleTypeRole</key><string>Editor</string>
+        <key>LSHandlerRank</key><string>Owner</string>
+        <key>LSItemContentTypes</key><array><string>io.jovon.ledsign.design</string></array>
+    </dict></array>
 </dict>
 </plist>
 PLIST
 
 codesign --force --sign - "$APP"
+# Tell Launch Services about the .ledsign type so Finder double-click opens us.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
 echo "Built $(pwd)/$APP"

@@ -23,7 +23,9 @@ struct ContentView: View {
     @State private var mode: SignMode = .scrollLeft
     @AppStorage("speed") private var speed = 128.0
     @AppStorage("brightness") private var brightness = 200.0
+    @AppStorage("loopDelay") private var loopDelay = 150.0
     @State private var powerOn = true
+    @State private var openError: String?
 
     private static let fonts = ["Helvetica", "Arial", "Arial Black", "Impact", "Futura",
                                 "Menlo", "Courier New", "Silom", "Chalkboard"]
@@ -41,12 +43,17 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             statusBar
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue) }
+            HStack {
+                Picker("", selection: $tab) {
+                    ForEach(Tab.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 200)
+                Spacer()
+                Button("Open…", action: openDesign).keyboardShortcut("o")
+                Button("Save…", action: saveDesign).keyboardShortcut("s")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 200)
 
             ScrollView(.horizontal) {
                 LEDPreview(frame: currentFrame, signWidth: sign.info.width,
@@ -70,6 +77,7 @@ struct ContentView: View {
         }
         .padding(20)
         .frame(minWidth: 940)
+        .onOpenURL { loadDesign(from: $0) }
         .onChange(of: sign.info) { _, info in
             if drawing.width != info.width || drawing.height != info.height {
                 drawing = PixelFrame(width: info.width, height: info.height)
@@ -114,8 +122,6 @@ struct ContentView: View {
             palette(selection: $brush, includeOff: true)
             Text("Click or drag to paint · pick Off to erase").foregroundStyle(.secondary)
             Spacer()
-            Button("Open…", action: openDesign).keyboardShortcut("o")
-            Button("Save…", action: saveDesign).keyboardShortcut("s")
             Button("Fill") { drawing = PixelFrame(width: drawing.width, height: drawing.height, fill: brush) }
             Button("Clear") { drawing = PixelFrame(width: drawing.width, height: drawing.height) }
         }
@@ -131,6 +137,15 @@ struct ContentView: View {
 
             slider("Speed", value: $speed) { CoolLEDProtocol.speed($0) }
             slider("Brightness", value: $brightness) { CoolLEDProtocol.brightness($0) }
+            if usesLoop {
+                HStack {
+                    Text("Loop speed")
+                    // Per-frame delay: right = faster. Takes effect on the next Send.
+                    Slider(value: Binding(get: { 550 - loopDelay }, set: { loopDelay = 550 - $0 }), in: 50...500)
+                        .frame(width: 120)
+                }
+                .help("Speed of the scroll-over-background animation. Applies on the next Send.")
+            }
 
             Toggle("Display on", isOn: $powerOn)
                 .toggleStyle(.switch)
@@ -143,18 +158,31 @@ struct ContentView: View {
         HStack {
             if let p = sign.sendProgress {
                 ProgressView(value: p).frame(width: 200)
-            } else if let err = sign.lastError {
+                Text(usesLoop ? "Uploading scroll animation…" : "Sending…").foregroundStyle(.secondary)
+            } else if let err = openError ?? sign.lastError {
                 Label(err, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
             } else if !sign.isReady {
                 Text("Close the CoolLED app on your phone — the sign accepts only one connection.")
+                    .foregroundStyle(.secondary)
+            } else if usesLoop {
+                Label("Scroll over background: the \(currentFrame.backgroundColor.name.lowercased()) background stays still. Upload takes about a minute.",
+                      systemImage: "info.circle")
                     .foregroundStyle(.secondary)
             }
             Spacer()
             Button {
                 let frame = currentFrame
+                let loop = usesLoop
                 Task {
-                    await sign.send(CoolLEDProtocol.image(frame, signWidth: sign.info.width), expectAck: true)
-                    await sign.send(CoolLEDProtocol.mode(mode), expectAck: false)
+                    await sign.send(CoolLEDProtocol.brightness(UInt8(brightness)), expectAck: false)
+                    if loop {
+                        let frames = ScrollLoop.frames(of: frame, signWidth: sign.info.width)
+                        await sign.send(CoolLEDProtocol.animation(frames, delay: UInt16(loopDelay)), expectAck: true)
+                    } else {
+                        await sign.send(CoolLEDProtocol.image(frame, signWidth: sign.info.width), expectAck: true)
+                        await sign.send(CoolLEDProtocol.mode(mode), expectAck: false)
+                        await sign.send(CoolLEDProtocol.speed(UInt8(speed)), expectAck: false)
+                    }
                 }
             } label: {
                 Label("Send to Sign", systemImage: "paperplane.fill").padding(.horizontal, 8)
@@ -166,26 +194,57 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Designs (PNG, 1 pixel per LED)
+    // MARK: Designs (.ledsign JSON; PNG import)
+
+    /// Scroll left over a non-black background → send a seamless animation loop so
+    /// the background stays still (the sign's own scroll would show black gaps).
+    private var usesLoop: Bool {
+        mode == .scrollLeft && ScrollLoop.needsLoop(currentFrame)
+    }
+
+    static let ledsignType = UTType(exportedAs: "io.jovon.ledsign.design", conformingTo: .json)
 
     private func openDesign() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png]
+        panel.allowedContentTypes = [Self.ledsignType, .png]
         panel.directoryURL = Self.designsFolder
-        guard panel.runModal() == .OK, let url = panel.url,
-              let data = try? Data(contentsOf: url),
-              let frame = PixelFrame(pngData: data, height: sign.info.height) else { return }
-        drawing = frame
-        tab = .draw
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        loadDesign(from: url)
+    }
+
+    private func loadDesign(from url: URL) {
+        openError = nil
+        do {
+            let data = try Data(contentsOf: url)
+            if url.pathExtension.lowercased() == "png" {
+                guard let frame = PixelFrame(pngData: data, height: sign.info.height) else { return }
+                drawing = frame
+            } else {
+                let doc = try LEDSignDocument.decode(data)
+                drawing = try doc.frame()
+                brightness = Double(doc.settings.brightness)
+                speed = Double(doc.settings.speed)
+                loopDelay = Double(doc.settings.loopDelay)
+                mode = doc.settings.signMode
+            }
+            tab = .draw
+        } catch {
+            openError = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"
+        }
     }
 
     private func saveDesign() {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.png]
+        panel.allowedContentTypes = [Self.ledsignType]
         panel.directoryURL = Self.designsFolder
-        panel.nameFieldStringValue = "Design.png"
+        panel.nameFieldStringValue = "Design.\(LEDSignDocument.fileExtension)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? drawing.pngData()?.write(to: url)
+        openError = nil
+        let doc = LEDSignDocument(
+            frame: currentFrame,
+            settings: .init(brightness: Int(brightness), speed: Int(speed), mode: mode, loopDelay: Int(loopDelay))
+        )
+        do { try doc.encoded().write(to: url) } catch { openError = error.localizedDescription }
     }
 
     private static var designsFolder: URL {

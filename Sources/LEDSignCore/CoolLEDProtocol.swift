@@ -78,6 +78,22 @@ public enum CoolLEDProtocol {
         return chunked(payload, command: .image).map(packet)
     }
 
+    /// A looping animation. Every frame must be exactly sign-sized. `delay` is the
+    /// per-frame delay (larger = slower; 150 looked right on the 96×16 sign).
+    public static func animation(_ frames: [PixelFrame], delay: UInt16) -> [[UInt8]] {
+        precondition(!frames.isEmpty && frames.count <= 255, "1–255 frames")
+        var r: [UInt8] = [], g: [UInt8] = [], b: [UInt8] = []
+        for f in frames {
+            let planes = bitPlanes(f), n = planes.count / 3
+            r += planes[0..<n]; g += planes[n..<2 * n]; b += planes[(2 * n)...]
+        }
+        var payload = [UInt8](repeating: 0, count: 24)  // purpose unknown; always zero
+        payload.append(UInt8(frames.count))
+        payload += be16(Int(delay))
+        payload += r + g + b
+        return chunked(payload, command: .animation).map(packet)
+    }
+
     // MARK: Internals (internal for tests)
 
     /// Column-major 1-bit planes: for each column top-to-bottom, 8 rows per byte, MSB
