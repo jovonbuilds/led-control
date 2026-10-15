@@ -1,0 +1,210 @@
+import SwiftUI
+import LEDSignCore
+
+struct ContentView: View {
+    enum Tab: String, CaseIterable { case text = "Text", draw = "Draw" }
+
+    @StateObject private var sign = SignConnection()
+    @State private var tab: Tab = .text
+
+    // Text
+    @AppStorage("text") private var text = "Hello!"
+    @State private var textColor: SignColor = .red
+    @AppStorage("fontName") private var fontName = "Helvetica"
+    @AppStorage("fontSize") private var fontSize = 15.0
+    @AppStorage("bold") private var bold = true
+
+    // Drawing
+    @State private var drawing = PixelFrame(width: 96, height: 16)
+    @State private var brush: SignColor = .green
+
+    // Sign settings
+    @State private var mode: SignMode = .scrollLeft
+    @AppStorage("speed") private var speed = 128.0
+    @AppStorage("brightness") private var brightness = 200.0
+    @State private var powerOn = true
+
+    private static let fonts = ["Helvetica", "Arial", "Arial Black", "Impact", "Futura",
+                                "Menlo", "Courier New", "Silom", "Chalkboard"]
+
+    private var currentFrame: PixelFrame {
+        switch tab {
+        case .text:
+            TextRenderer.render(text, fontName: fontName, fontSize: fontSize, color: textColor,
+                                height: sign.info.height, bold: bold)
+        case .draw:
+            drawing
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            statusBar
+            Picker("", selection: $tab) {
+                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 200)
+
+            ScrollView(.horizontal) {
+                LEDPreview(frame: currentFrame, signWidth: sign.info.width,
+                           paint: tab == .draw ? { x, y in drawing[x, y] = brush } : nil)
+                    .padding(.bottom, 6)
+            }
+            .frame(height: CGFloat(sign.info.height) * 9 + 20)
+
+            Group {
+                switch tab {
+                case .text: textControls
+                case .draw: drawControls
+                }
+            }
+            .frame(minHeight: 60, alignment: .top)
+
+            Divider()
+            signControls
+            Divider()
+            sendRow
+        }
+        .padding(20)
+        .frame(minWidth: 940)
+        .onChange(of: sign.info) { _, info in
+            if drawing.width != info.width || drawing.height != info.height {
+                drawing = PixelFrame(width: info.width, height: info.height)
+            }
+        }
+    }
+
+    // MARK: Sections
+
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            Circle().fill(statusColor).frame(width: 10, height: 10)
+            Text(statusText).font(.headline)
+            if sign.isReady {
+                Text("\(sign.info.width)×\(sign.info.height) · \(sign.info.colorMode == 1 ? "7-color" : "color mode \(sign.info.colorMode)")")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Reconnect") { sign.reconnect() }
+        }
+    }
+
+    private var textControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Message", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .font(.title3)
+            HStack(spacing: 16) {
+                palette(selection: $textColor, includeOff: false)
+                Picker("Font", selection: $fontName) {
+                    ForEach(Self.fonts, id: \.self) { Text($0).font(.custom($0, size: 13)) }
+                }
+                .frame(width: 200)
+                Stepper("Size \(Int(fontSize))", value: $fontSize, in: 6...24)
+                Toggle("Bold", isOn: $bold)
+            }
+        }
+    }
+
+    private var drawControls: some View {
+        HStack(spacing: 16) {
+            palette(selection: $brush, includeOff: true)
+            Text("Click or drag to paint · pick Off to erase").foregroundStyle(.secondary)
+            Spacer()
+            Button("Fill") { drawing = PixelFrame(width: drawing.width, height: drawing.height, fill: brush) }
+            Button("Clear") { drawing = PixelFrame(width: drawing.width, height: drawing.height) }
+        }
+    }
+
+    private var signControls: some View {
+        HStack(spacing: 24) {
+            Picker("Mode", selection: $mode) {
+                ForEach(SignMode.allCases, id: \.self) { Text($0.name) }
+            }
+            .frame(width: 200)
+            .onChange(of: mode) { _, m in Task { await sign.send(CoolLEDProtocol.mode(m), expectAck: false) } }
+
+            slider("Speed", value: $speed) { CoolLEDProtocol.speed($0) }
+            slider("Brightness", value: $brightness) { CoolLEDProtocol.brightness($0) }
+
+            Toggle("Display on", isOn: $powerOn)
+                .toggleStyle(.switch)
+                .onChange(of: powerOn) { _, on in Task { await sign.send(CoolLEDProtocol.power(on: on), expectAck: false) } }
+        }
+        .disabled(!sign.isReady)
+    }
+
+    private var sendRow: some View {
+        HStack {
+            if let p = sign.sendProgress {
+                ProgressView(value: p).frame(width: 200)
+            } else if let err = sign.lastError {
+                Label(err, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+            } else if !sign.isReady {
+                Text("Close the CoolLED app on your phone — the sign accepts only one connection.")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                let frame = currentFrame
+                Task {
+                    await sign.send(CoolLEDProtocol.image(frame, signWidth: sign.info.width), expectAck: true)
+                    await sign.send(CoolLEDProtocol.mode(mode), expectAck: false)
+                }
+            } label: {
+                Label("Send to Sign", systemImage: "paperplane.fill").padding(.horizontal, 8)
+            }
+            .controlSize(.large)
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(!sign.isReady || sign.sendProgress != nil)
+        }
+    }
+
+    // MARK: Pieces
+
+    private func palette(selection: Binding<SignColor>, includeOff: Bool) -> some View {
+        HStack(spacing: 6) {
+            ForEach(SignColor.allCases.filter { includeOff || $0 != .black }, id: \.self) { c in
+                Circle()
+                    .fill(c == .black ? Color(white: 0.15) : c.swiftUI)
+                    .frame(width: 22, height: 22)
+                    .overlay(Circle().stroke(selection.wrappedValue == c ? Color.accentColor : .gray.opacity(0.4),
+                                             lineWidth: selection.wrappedValue == c ? 3 : 1))
+                    .help(c.name)
+                    .onTapGesture { selection.wrappedValue = c }
+            }
+        }
+    }
+
+    private func slider(_ label: String, value: Binding<Double>, packet: @escaping (UInt8) -> [[UInt8]]) -> some View {
+        HStack {
+            Text(label)
+            // Send on release, not on every intermediate value.
+            Slider(value: value, in: 0...255) { editing in
+                if !editing { Task { await sign.send(packet(UInt8(value.wrappedValue)), expectAck: false) } }
+            }
+            .frame(width: 140)
+        }
+    }
+
+    private var statusText: String {
+        switch sign.state {
+        case .bluetoothUnavailable(let why): why
+        case .scanning: "Looking for sign…"
+        case .connecting(let name): "Connecting to \(name)…"
+        case .ready: sign.deviceName
+        case .disconnected: "Disconnected"
+        }
+    }
+
+    private var statusColor: Color {
+        switch sign.state {
+        case .ready: .green
+        case .scanning, .connecting: .yellow
+        default: .red
+        }
+    }
+}
