@@ -1,0 +1,53 @@
+diff --git a/src/coolledx/client.py b/src/coolledx/client.py
+index 485f773..7e410d1 100644
+--- a/src/coolledx/client.py
++++ b/src/coolledx/client.py
+@@ -141,7 +141,7 @@ class Client:
+                     raise BleakError("Device has no name")
+                 self.ble_device = ble_device
+                 self.bleak_client = bleak_client
+-                self.hardware = CoolLED.get_class_for_string(ble_device.name)(height, width, color_mode, firmware_version)
++                self.hardware = CoolLED.get_class_for_string(ble_device.name)(width, height, color_mode, firmware_version)
+                 break
+             except (BleakError, TimeoutError, asyncio.CancelledError) as e:
+                 LOGGER.warning(
+@@ -342,7 +342,7 @@ class Client:
+         await self.bleak_client.write_gatt_char(
+             self.characteristic_uuid,
+             data,
+-            response=expect_response,
++            response=False,
+         )
+ 
+     async def write_hexstr(self, data: str, *, expect_response: bool = False) -> None:
+diff --git a/src/coolledx/commands.py b/src/coolledx/commands.py
+index faeda35..3488ac9 100644
+--- a/src/coolledx/commands.py
++++ b/src/coolledx/commands.py
+@@ -220,6 +220,13 @@ class Command(abc.ABC):
+             )
+         return chunks
+ 
++    def create_command(self, raw_data: bytearray) -> bytearray:
++        """CoolLEDX basic framing: 0x01 [escaped len16 + data] 0x03."""
++        extended_data = bytearray().join(
++            [len(raw_data).to_bytes(2, byteorder="big"), raw_data],
++        )
++        return bytearray().join([b"\x01", self.escape_bytes(extended_data), b"\x03"])
++
+     def get_command_chunks(self) -> list[bytearray]:
+         """Get the command as a bytearray."""
+         raw_data_chunks = self.get_command_raw_data_chunks()
+diff --git a/src/coolledx/hardware.py b/src/coolledx/hardware.py
+index 910c79e..1b4cbb0 100644
+--- a/src/coolledx/hardware.py
++++ b/src/coolledx/hardware.py
+@@ -15,7 +15,7 @@ Generally, there are five classes of hardware, as far as I can tell:
+ """
+ 
+ from .message_handler import MessageHandler, CoolLEDXMessageHandler, CoolLEDMMessageHandler, CoolLEDUMessageHandler, CoolLEDMXMessageHandler, CoolLEDUXMessageHandler
+-from .commands import COLOR_TYPE_MONO
++COLOR_TYPE_MONO = 0x00
+ 
+ class CoolLED:
+     """Base class for CoolLED hardware definitions."""
