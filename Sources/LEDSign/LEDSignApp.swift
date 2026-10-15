@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct LEDSignApp: App {
     var body: some Scene {
-        WindowGroup("LED Sign") {
+        Window("LED Sign", id: "main") {
             ContentView()
         }
         .windowResizability(.contentSize)
