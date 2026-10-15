@@ -1,3 +1,4 @@
 .build/
 LEDSign.app/
 .swiftpm/
+.DS_Store
