@@ -53,6 +53,12 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(SignInfo(manufacturerData: data), SignInfo(width: 96, height: 16, colorMode: 1, firmware: 6))
     }
 
+    func testPNGRoundTrip() throws {
+        let f = pattern(width: 96)
+        let data = try XCTUnwrap(f.pngData())
+        XCTAssertEqual(PixelFrame(pngData: data, height: 16), f)
+    }
+
     func testTextRendersInk() {
         let f = TextRenderer.render("HI", fontName: "Helvetica", fontSize: 14, color: .red, bold: true)
         XCTAssertEqual(f.height, 16)

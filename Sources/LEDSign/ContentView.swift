@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import LEDSignCore
 
 struct ContentView: View {
@@ -113,6 +114,8 @@ struct ContentView: View {
             palette(selection: $brush, includeOff: true)
             Text("Click or drag to paint · pick Off to erase").foregroundStyle(.secondary)
             Spacer()
+            Button("Open…", action: openDesign).keyboardShortcut("o")
+            Button("Save…", action: saveDesign).keyboardShortcut("s")
             Button("Fill") { drawing = PixelFrame(width: drawing.width, height: drawing.height, fill: brush) }
             Button("Clear") { drawing = PixelFrame(width: drawing.width, height: drawing.height) }
         }
@@ -161,6 +164,34 @@ struct ContentView: View {
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(!sign.isReady || sign.sendProgress != nil)
         }
+    }
+
+    // MARK: Designs (PNG, 1 pixel per LED)
+
+    private func openDesign() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png]
+        panel.directoryURL = Self.designsFolder
+        guard panel.runModal() == .OK, let url = panel.url,
+              let data = try? Data(contentsOf: url),
+              let frame = PixelFrame(pngData: data, height: sign.info.height) else { return }
+        drawing = frame
+        tab = .draw
+    }
+
+    private func saveDesign() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.directoryURL = Self.designsFolder
+        panel.nameFieldStringValue = "Design.png"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? drawing.pngData()?.write(to: url)
+    }
+
+    private static var designsFolder: URL {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Documents/LED Sign Designs")
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     // MARK: Pieces
